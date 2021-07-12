@@ -123,6 +123,8 @@ let showPopupPvp;
 let showMinPokePopup;
 let showWeatherDetails;
 
+let showPokemonNotifications;
+
 let tileLayer;
 let nestLayer = new L.LayerGroup();
 let scanAreaLayer = new L.LayerGroup();
@@ -134,6 +136,8 @@ let nestsDb = {};
 let scanAreasDb = {};
 let cpMultipliers = {};
 let defaultRarity = {};
+
+let pokemonNotificationsSent = {};
 
 let skipForms = ['Shadow', 'Purified'];
 
@@ -430,6 +434,7 @@ $(function () {
             portal: portalFilterNew,
             weather: weatherFilterNew,
             device: deviceFilterNew,
+            // TODO: Export all settings
         };
         let json = JSON.stringify(settings);
         let el = document.createElement('a');
@@ -1181,6 +1186,9 @@ function loadStorage () {
         if (defaultSettings['level51-stats'] === undefined) {
             defaultSettings['level51-stats'] = { show: configPvp.l51stats };
         }
+        if (defaultSettings['pokemon-notifications'] == undefined) {
+            defaultSettings['pokemon-notifications'] = { show: false }; // TODO: Configurable as default value
+        }
         store('settings', JSON.stringify(defaultSettings));
         settings = defaultSettings;
     } else {
@@ -1245,6 +1253,9 @@ function loadStorage () {
         if (settings['level51-stats'] === undefined) {
             settings['level51-stats'] = { show: configPvp.l51stats };
         }
+        if (settings['pokemon-notifications'] === undefined) {
+            settings['pokemon-notifications'] = { show: false }; // TODO: Configurable as default value
+        }
     }
     clusterPokemon = settings['pokemon-cluster'].show;
     clusterGyms = settings['gym-cluster'].show;
@@ -1266,6 +1277,7 @@ function loadStorage () {
     showLevel41Stats = settings['level41-stats'].show;
     showLevel50Stats = settings['level50-stats'].show;
     showLevel51Stats = settings['level51-stats'].show;
+    showPokemonNotifications = settings['pokemon-notifications'].show;
 }
 
 function initMap () {
@@ -1588,6 +1600,7 @@ function initMap () {
         const newShowLevel41Stats = settingsNew['level41-stats'].show;
         const newShowLevel50Stats = settingsNew['level50-stats'].show;
         const newShowLevel51Stats = settingsNew['level51-stats'].show;
+        const newShowPokemonNotifications = settingsNew['pokemon-notifications'].show;
         if (clusterPokemon !== newClusterPokemon ||
             showPokemonGlow !== newShowPokemonGlow ||
             showPokemonTimers !== newShowPokemonTimers ||
@@ -1597,7 +1610,8 @@ function initMap () {
             showLevel40Stats !== newShowLevel40Stats ||
             showLevel41Stats !== newShowLevel41Stats ||
             showLevel50Stats !== newShowLevel50Stats ||
-            showLevel51Stats !== newShowLevel51Stats) {
+            showLevel51Stats !== newShowLevel51Stats ||
+            showPokemonNotifications !== newShowPokemonNotifications) {
             $.each(pokemonMarkers, function (index, pokemon) {
                 if (clusterPokemon) {
                     clusters.removeLayer(pokemon.marker);
@@ -1658,6 +1672,7 @@ function initMap () {
         showLevel41Stats = newShowLevel41Stats;
         showLevel50Stats = newShowLevel50Stats;
         showLevel51Stats = newShowLevel51Stats;
+        showPokemonNotifications = newShowPokemonNotifications;
         store('show_pokemon_timers', newShowPokemonTimers);
         store('show_raid_timers', newShowRaidTimers);
         store('show_invasion_timers', newShowInvasionTimers);
@@ -1673,6 +1688,7 @@ function initMap () {
         store('level41_stats', newShowLevel41Stats);
         store('level50_stats', newShowLevel50Stats);
         store('level51_stats', newShowLevel51Stats);
+        store('show_pokemon_notifications', newShowPokemonNotifications);
 
         if (pokemonMarkers.length === 0 ||
             gymMarkers.length === 0 ||
@@ -1949,7 +1965,7 @@ function loadSearchData (id, value) {
 }
 
 function centerOnMap(lat, lon) {
-    $('#searchModal').modal('toggle');
+    $('#searchModal').modal('hide');
     let latlng = new L.LatLng(lat, lon);
     let zoom = maxZoom;
     map.setView(latlng, zoom);
@@ -2428,6 +2444,9 @@ function loadData () {
                         } else {
                             pokemon.marker.addTo(map);
                         }
+                        // Show Pokemon notification
+                        // TODO: Check if setting is set for notifications
+                        showPokemonNotification(pokemon);
 
                     } else {
                         if (oldPokemon.expire_timestamp !== pokemon.expire_timestamp) {
@@ -3098,7 +3117,7 @@ const getPokemonPopupContent = (pokemon) => {
   const getIV = (pokemon) => {
     if (pokemon.atk_iv !== null && pokemon.atk_iv !== undefined && popupDetails.pokemon.iv) {
       const ivColors = { 0: 'red', 66: 'orange', 82: 'yellow', 100: 'green' }
-      const ivPercent = ((pokemon.atk_iv + pokemon.def_iv + pokemon.sta_iv) / .45).toFixed(2);
+      const ivPercent = calculateIV(pokemon);
       let selectedColor
       Object.keys(ivColors).forEach(range => ivPercent >= parseInt(range) ? selectedColor = ivColors[range] : '');
       return `
@@ -4749,7 +4768,8 @@ function manageSelectButton(e, isNew) {
         type === 'pvp-level40-stats' ||
         type === 'pvp-level41-stats' ||
         type === 'pvp-level50-stats' ||
-        type === 'pvp-level51-stats') {
+        type === 'pvp-level51-stats' ||
+        type === 'pokemon-notifications') {
         switch (info) {
             case 'hide':
                 shouldShow = settingsNew[id].show === false;
@@ -5323,7 +5343,8 @@ function manageSelectButton(e, isNew) {
                 type === 'pvp-level40-stats' ||
                 type === 'pvp-level41-stats' ||
                 type === 'pvp-level50-stats' ||
-                type === 'pvp-level51-stats') {
+                type === 'pvp-level51-stats' ||
+                type === 'pokemon-notifications') {
                 switch (info) {
                     case 'hide':
                         settingsNew[id].show = false;
@@ -6235,6 +6256,58 @@ function getCpAtLevel(id, form, level, isMax) {
     }
     return 0;
 }
+
+const showPokemonNotification = (pokemon) => {
+    // Check if we have at least rendered the map once before showing notifications
+    if (lastUpdate === 0)
+        return;
+
+    // Check if pokemon notifications are enabled
+    if (!showPokemonNotifications) {
+        return;
+    }
+    if (pokemonNotificationsSent[pokemon.id]) {
+        // Prevent notifications of the same pokemon twice
+        return;
+    }
+    pokemonNotificationsSent[pokemon.id] = true;
+    const iv = pokemon.atk_iv !== null ? calculateIV(pokemon) : '?';
+    const name = getPokemonName(pokemon.pokemon_id);
+    const formName = getFormName(pokemon.form);
+    // TODO: Add pokemon costume to notification
+    const genderIcon = getGenderIcon(pokemon.gender);
+    const title = `Found Pokemon: ${name}${pokemon.form > 0 ? ' (Form: ' + formName + ')' : ''}`;
+    const message = `IV: ${iv}% Lvl: ${pokemon.level || '?'} Gender: ${genderIcon}`;
+    const icon = getPokemonIcon(pokemon.pokemon_id, pokemon.form, 0, pokemon.gender, pokemon.costume);
+    const iconUrl = `${availableIconStyles[selectedIconStyle].path}/${icon}.png`;
+    let notification = toastr.info(message, title, {
+        closeButton: true,
+        positionClass: 'toast-top-right',
+        preventDuplicates: true,
+        onclick: () => {
+            centerOnMap(pokemon.lat, pokemon.lon);
+        },
+        showDuration: '2000',
+        hideDuration: '1000',
+        timeOut: '6000',
+        extendedTimeOut: '1500',
+        showEasing: 'swing',
+        hideEasing: 'linear',
+        showMethod: 'fadeIn',
+        hideMethod: 'fadeOut',
+    });
+    notification.removeClass('toast-info');
+    notification.css({
+        'padding-left': '74px',
+        'background-image': `url('${iconUrl}')`,
+        'background-size': '48px',
+        'background-color': '#15151D', // TODO: Check dark mode?
+    });
+};
+
+const calculateIV = (pokemon) => {
+    return ((pokemon.atk_iv + pokemon.def_iv + pokemon.sta_iv) / .45).toFixed(2);
+};
 
 // MARK: - Init Filter
 
@@ -7440,6 +7513,9 @@ function loadFilterSettings (e) {
 
         showLevel51Stats = obj.level51_stats;
         store('level51_stats', showLevel51Stats);
+
+        showPokemonNotifications = obj.show_pokemon_notifications;
+        store('show_pokemon_notifications', showPokemonNotifications);
 
         if (showGyms) {
             $('#show-gyms').addClass('active');
